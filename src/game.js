@@ -2,11 +2,13 @@
 // screen shake, particle bursts and win state. Wires the panel + audio together.
 
 import { Ball } from './ball.js';
-import { buildRings, innermostAlive, collide, outlineSegments } from './rings.js';
+import { buildRings, innermostAlive, collide, outlineSegments, normalizeAngle } from './rings.js';
 import { AudioEngine } from './audio.js';
 import { Panel } from './panel.js';
 
 const TAU = Math.PI * 2;
+const BALL_CAP = 200;    // hard ceiling on simultaneous balls (split/add modes)
+const MAX_SPEED = 5000;  // world u/s clamp so speed-ramp can't tunnel collisions
 
 class Game {
   constructor() {
@@ -19,6 +21,7 @@ class Game {
     this.particles = [];
     this._pendingSpawn = 0;      // balls to add after the step loop (ball mode)
     this._toRemove = new Set();  // balls to cull after the step loop (ball mode)
+    this._pendingSplits = [];    // parent balls to clone after the step loop (split)
     this.running = false;
     this.won = false;
     this.maxSize = 0;            // for the "Size:" readout
@@ -28,6 +31,10 @@ class Game {
 
     this.cx = 0; this.cy = 0;    // viewport center (screen px); world center is (0,0)
     this.cam = 1;                // camera zoom (world units -> screen px)
+    this.camX = 0; this.camY = 0; // world point the camera is centered on (pan)
+    this.drama = 0;              // 0..1 near-miss intensity (eased)
+    this.dramaBall = null;       // ball to frame during a near miss
+    this.timeScale = 1;          // slow-mo factor for the sim
     // Cap render resolution: a 120Hz phone at dpr 3 has ~9ms just to fill the
     // canvas, which alone blows the frame budget. 1.5 stays crisp and fast.
     this.dpr = Math.min(window.devicePixelRatio || 1, 1.5);
@@ -97,8 +104,8 @@ class Game {
     this.canvas.addEventListener('pointerdown', (e) => {
       if (!this.running) return;
       const rect = this.canvas.getBoundingClientRect();
-      const x = (e.clientX - rect.left - this.cx) / this.cam;
-      const y = (e.clientY - rect.top - this.cy) / this.cam;
+      const x = (e.clientX - rect.left - this.cx) / this.cam + this.camX;
+      const y = (e.clientY - rect.top - this.cy) / this.cam + this.camY;
       this.spawnBall(x, y);
     });
   }
@@ -164,6 +171,9 @@ class Game {
     this.particles = [];
     this._pendingSpawn = 0;
     this._toRemove.clear();
+    this._pendingSplits.length = 0;
+    this.drama = 0; this.dramaBall = null; this.timeScale = 1;
+    this.camX = 0; this.camY = 0;
     this.won = false;
     this.maxSize = this.config.ballRadius;
     this.audio.reset();
@@ -185,15 +195,62 @@ class Game {
     if (cfg.gravity > 0) b.vy = -Math.abs(b.vy) * 0.5 - 60;
     b.hue = (cfg.hue + Math.random() * 60) % 360;
     this.balls.push(b);
-    if (this.balls.length > 200) this.balls.shift(); // safety cap
+    if (this.balls.length > BALL_CAP) this.balls.shift(); // safety cap
   }
 
   _frame(t) {
-    const dt = Math.min(0.033, (this.last ? (t - this.last) : 16) / 1000);
+    const rawDt = Math.min(0.033, (this.last ? (t - this.last) : 16) / 1000);
     this.last = t;
-    if (this.running) this._update(dt);
-    this._render(dt);
+    if (this.running) {
+      this._updateDrama(rawDt);                 // near-miss detection eases in real time
+      this._update(rawDt * this.timeScale);     // physics runs on slowed time
+    }
+    this._updateCamera(rawDt);                   // camera always eases in real time
+    this._render(rawDt);
     requestAnimationFrame((nt) => this._frame(nt));
+  }
+
+  // Detect a ball about to thread a gap and ease the drama level toward it.
+  _updateDrama(rawDt) {
+    const cfg = this.config;
+    let target = 0, best = null;
+    const ring = innermostAlive(this.rings);
+    if (cfg.nearMiss && ring) {
+      const band = ring.thickness + cfg.ballRadius + 80;   // only when near the wall
+      for (const b of this.balls) {
+        const distW = Math.hypot(b.x, b.y);
+        if (distW < 1e-3) continue;
+        const radialV = (b.vx * b.x + b.vy * b.y) / distW; // outward speed
+        if (radialV <= 0) continue;                        // must be approaching
+        const local = normalizeAngle(Math.atan2(b.y, b.x) - ring.rotation);
+        const wall = ring.radiusAtAngle(local);
+        const distToWall = wall - distW;
+        if (distToWall < -ring.thickness || distToWall > band) continue;
+        const angDist = Math.abs(normalizeAngle(local - ring.gapCenter));
+        const rf = Math.max(0, 1 - Math.max(0, distToWall) / band);
+        const af = Math.max(0, 1 - angDist / Math.max(0.05, ring.gapWidth)); // near gap center
+        const e = rf * af;
+        if (e > target) { target = e; best = b; }
+      }
+    }
+    if (best) this.dramaBall = best;
+    // Ease toward the target excitement; release a touch faster than it builds.
+    const k = target > this.drama ? 6 : 3.5;
+    this.drama += (target - this.drama) * Math.min(1, rawDt * k);
+    if (this.drama < 0.01) { this.drama = 0; this.dramaBall = null; }
+    this.timeScale = 1 - this.drama * 0.82;     // down to ~0.18x at full drama
+  }
+
+  // Ease zoom + pan every real frame so slow-mo doesn't stall the camera.
+  _updateCamera(rawDt) {
+    const base = this._camTarget();
+    const zoomTarget = base * (1 + this.drama * 0.9);
+    this.cam += (zoomTarget - this.cam) * Math.min(1, rawDt * 4);
+    // Pan toward the framed ball as drama rises, back to the arena center as it falls.
+    const tx = this.dramaBall ? this.dramaBall.x * this.drama : 0;
+    const ty = this.dramaBall ? this.dramaBall.y * this.drama : 0;
+    this.camX += (tx - this.camX) * Math.min(1, rawDt * 5);
+    this.camY += (ty - this.camY) * Math.min(1, rawDt * 5);
   }
 
   _update(dt) {
@@ -202,9 +259,18 @@ class Game {
 
     for (const r of this.rings) r.update(dt);
 
+    // Continuous speed ramp: scale every ball's velocity a little each frame.
+    if (cfg.rampOverTime > 0) {
+      const f = 1 + (cfg.rampOverTime / 100) * dt;
+      for (const b of this.balls) { b.vx *= f; b.vy *= f; }
+    }
+
     // Substep integration for stable collisions at speed. Arena center = (0,0)
-    // in world coords; the camera handles mapping to the screen.
-    const sub = 3;
+    // in world coords; the camera handles mapping to the screen. More substeps
+    // when balls are fast (speed ramp) so they can't tunnel through a wall.
+    let maxSp = 0;
+    for (const b of this.balls) { const s2 = b.vx * b.vx + b.vy * b.vy; if (s2 > maxSp) maxSp = s2; }
+    const sub = Math.min(12, Math.max(3, Math.ceil(Math.sqrt(maxSp) * dt / 10)));
     const sdt = dt / sub;
     for (let s = 0; s < sub; s++) {
       for (const ball of this.balls) {
@@ -235,10 +301,6 @@ class Game {
         if (this.config.showText) this._toast('★ ESCAPED ALL WALLS ★');
       }
     }
-
-    // Ease the camera toward its target so zoom/loop modes glide in and out.
-    const target = this._camTarget();
-    this.cam += (target - this.cam) * Math.min(1, dt * 4);
 
     for (const ball of this.balls) ball.recordTrail();
 
@@ -309,13 +371,22 @@ class Game {
     this.shakeAmount = Math.min(this.shakeAmount + cfg.shake * (kind === 'escape' ? 1.6 : 1), cfg.shake * 2);
     if (cfg.particles) this._burst(ball.x, ball.y, ball.hue, kind === 'escape' ? 24 : 10);
 
-    // Ball mode reacts to each wall break (escape). Queue the change and apply
-    // it after the step loop so we never mutate this.balls mid-iteration.
-    if (kind === 'escape' && cfg.ballMode === 'add') {
-      this._pendingSpawn++;
-    } else if (kind === 'escape' && cfg.ballMode === 'remove') {
-      this._toRemove.add(ball);
+    if (kind === 'escape') {
+      // Per-break speed ramp: jump this ball's velocity on each escape.
+      if (cfg.rampPerBreak > 0) {
+        const f = 1 + cfg.rampPerBreak / 100;
+        ball.vx *= f; ball.vy *= f;
+      }
+      // Ball mode + split are queued and applied after the step loop, so we
+      // never mutate this.balls mid-iteration.
+      if (cfg.ballMode === 'add') this._pendingSpawn++;
+      else if (cfg.ballMode === 'remove') this._toRemove.add(ball);
+      if (cfg.splitOnEscape) this._pendingSplits.push(ball);
     }
+
+    // Keep speed bounded so ramps can't make collisions tunnel.
+    const sp = Math.hypot(ball.vx, ball.vy);
+    if (sp > MAX_SPEED) { ball.vx *= MAX_SPEED / sp; ball.vy *= MAX_SPEED / sp; }
   }
 
   // Apply queued ball-mode changes once per frame, after the step loop.
@@ -333,6 +404,23 @@ class Game {
         this.spawnBall((Math.random() * 2 - 1) * inner * 0.2, -inner * 0.2);
       }
       this._pendingSpawn = 0;
+    }
+    if (this._pendingSplits.length) {
+      // Each escaping ball clones itself; the two diverge by a small angle so
+      // they fan out instead of overlapping. Stop cloning at the hard cap.
+      for (const parent of this._pendingSplits) {
+        if (this.balls.length >= BALL_CAP) break;
+        const sp = Math.hypot(parent.vx, parent.vy) || this.config.ballSpeed;
+        const base = Math.atan2(parent.vy, parent.vx);
+        const spread = 0.35;
+        parent.vx = Math.cos(base - spread) * sp;   // nudge parent one way
+        parent.vy = Math.sin(base - spread) * sp;
+        const child = new Ball(parent.x, parent.y,
+          Math.cos(base + spread) * sp, Math.sin(base + spread) * sp, parent.radius);
+        child.hue = (parent.hue + 40) % 360;
+        this.balls.push(child);
+      }
+      this._pendingSplits.length = 0;
     }
     this._updateReadout();
   }
@@ -399,6 +487,7 @@ class Game {
     ctx.save();
     ctx.translate(this.cx + sx, this.cy + sy);
     ctx.scale(this.cam, this.cam);
+    ctx.translate(-this.camX, -this.camY);   // pan (near-miss frames the ball)
 
     const baseHue = (cfg.hue + this.hueShift) % 360;
     ctx.globalCompositeOperation = 'lighter';

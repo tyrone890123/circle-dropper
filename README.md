@@ -36,15 +36,20 @@ Everything is a live slider/toggle in the right-hand panel:
   - **View → Zoom out on break:** the camera frames just the current innermost
     wall and zooms out each time one is eliminated.
 - **Motion** — spin speed, alternate spin direction, gravity, bounciness,
-  **bounce jitter** (±° of random error added to each bounce, 0 = none), and
+  **bounce jitter** (±° of random error added to each bounce, 0 = none),
+  **speed-up per break** / **speed-up per second** (escalation ramps), and
   **endless loop**: when the last wall breaks, every wall is rebuilt and the
   balls are flung back to the center to break out again — forever. In loop mode
   the camera zooms in on each rebuild and back out as the walls fall.
-- **Balls** — count, launch speed, size, grow-on-bounce (+ amount), and an
-  **On break** mode: *None*, *Add a ball*, or *Remove a ball* (culls down to a
-  last survivor) each time a wall is eliminated.
+- **Balls** — count, launch speed, size, grow-on-bounce (+ amount), an
+  **On break** mode (*None* / *Add a ball* / *Remove a ball* — culls to a last
+  survivor), and **Split in 2 on escape** (each ball clones every time it breaks
+  a wall, fanning out into screen-filling chaos). All ball-spawning modes share
+  a hard cap of 200 balls so the frame rate holds.
 - **Neon / FX** — base hue, hue drift, glow, trail, screen shake (default 0),
-  particles, and **show on-screen text** (turn off to hide the HUD / win text).
+  particles, **near-miss slow-mo + zoom** (when a ball is about to thread a gap,
+  time slows and the camera zooms in on it for the moment), and **show
+  on-screen text** (turn off to hide the HUD / win text).
 - **Sound** — on/off, volume, tone waveform, built-in scale.
 
 Tap/click the stage during play to drop extra balls. **Start** initialises audio
