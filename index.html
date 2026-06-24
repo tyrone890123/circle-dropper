@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>NEON ESCAPE — wall dropper</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <div id="stageWrap">
+      <canvas id="stage"></canvas>
+      <div id="readout">Walls: 0/0</div>
+      <div id="toast"></div>
+      <button id="togglePanel" title="Toggle controls">⚙</button>
+    </div>
+
+    <aside id="panel">
+      <header>
+        <h1>NEON&nbsp;ESCAPE</h1>
+        <p class="sub">Drop balls. Spin the arena. Blast the walls.</p>
+      </header>
+
+      <div class="actions">
+        <button id="startBtn" class="primary">▶ Start</button>
+        <button id="resetBtn">⟳ Reset</button>
+      </div>
+
+      <div id="controls"></div>
+
+      <div class="group">
+        <h3>Melody</h3>
+        <label class="ctl ctl-file">
+          <span class="ctl-label">Upload melody (mono)</span>
+          <input id="audioFile" type="file" accept="audio/*" />
+        </label>
+        <button id="useBuiltin" class="wide">Use built-in scale</button>
+      </div>
+
+      <div class="group">
+        <h3>Config JSON (import / export)</h3>
+        <div class="actions">
+          <button id="exportBtn">⬆ Export</button>
+          <button id="importBtn">⬇ Import</button>
+        </div>
+        <textarea id="jsonBox" spellcheck="false"
+          placeholder='Paste config JSON here and hit Import — or hit Export to dump current settings.'></textarea>
+      </div>
+
+      <footer>
+        Tap the stage during play to drop more balls. Everything live-updates.
+      </footer>
+    </aside>
+  </div>
+
+  <script type="module" src="src/game.js"></script>
+</body>
+</html>
