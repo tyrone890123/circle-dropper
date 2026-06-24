@@ -17,6 +17,8 @@ class Game {
     this.rings = [];
     this.balls = [];
     this.particles = [];
+    this._pendingSpawn = 0;      // balls to add after the step loop (ball mode)
+    this._toRemove = new Set();  // balls to cull after the step loop (ball mode)
     this.running = false;
     this.won = false;
     this.maxSize = 0;            // for the "Size:" readout
@@ -129,7 +131,9 @@ class Game {
   _camTarget() {
     const avail = Math.min(this.viewW, this.viewH) / 2 - 16;
     let focus = this._outerSize();
-    if (this.config.viewMode === 'zoom') {
+    // Follow the innermost wall in zoom view, and always in loop mode so the
+    // camera zooms in on each revert and back out as the walls break again.
+    if (this.config.viewMode === 'zoom' || this.config.loopMode) {
       const inner = innermostAlive(this.rings);
       if (inner) focus = (inner.size + this.config.thickness) * 1.18;
     }
@@ -158,6 +162,8 @@ class Game {
     this.rings = buildRings(this.config);
     this.balls = [];
     this.particles = [];
+    this._pendingSpawn = 0;
+    this._toRemove.clear();
     this.won = false;
     this.maxSize = this.config.ballRadius;
     this.audio.reset();
@@ -216,7 +222,21 @@ class Game {
       }
     }
 
-    // Ease the camera toward its target so 'zoom' mode glides out on each break.
+    this._applyBallMode();
+
+    // All walls cleared: either win, or (loop mode) rebuild and send the balls
+    // back to the start. Done before the camera ease so the revive registers
+    // and the camera zooms back in this frame.
+    if (innermostAlive(this.rings) === null && this.rings.length) {
+      if (this.config.loopMode) this._loopRestart();
+      else if (!this.won) {
+        this.won = true;
+        this._kaboom();
+        if (this.config.showText) this._toast('★ ESCAPED ALL WALLS ★');
+      }
+    }
+
+    // Ease the camera toward its target so zoom/loop modes glide in and out.
     const target = this._camTarget();
     this.cam += (target - this.cam) * Math.min(1, dt * 4);
 
@@ -233,12 +253,34 @@ class Game {
 
     this.shakeAmount = Math.max(0, this.shakeAmount - dt * 40);
 
-    if (!this.won && innermostAlive(this.rings) === null && this.rings.length) {
-      this.won = true;
-      this._kaboom();
-      this._toast('★ ESCAPED ALL WALLS ★');
-    }
     this._updateReadout();
+  }
+
+  // Endless/"reverting" loop: revive every wall with fresh gaps and fling the
+  // balls back to the center so they break their way out all over again.
+  _loopRestart() {
+    const cfg = this.config;
+    for (const r of this.rings) {
+      r.alive = true;
+      r.flash = 1;
+      r.gapCenter = Math.random() * TAU;
+      r.rotation = Math.random() * TAU;
+    }
+    if (cfg.particles) for (const b of this.balls) this._burst(b.x, b.y, b.hue, 30);
+    this.shakeAmount = Math.min(this.shakeAmount + cfg.shake * 2, cfg.shake * 2);
+
+    const inner = cfg.innerRadius;
+    const reseat = (b) => {
+      b.x = (Math.random() * 2 - 1) * inner * 0.2;
+      b.y = -inner * 0.2;
+      const a = Math.random() * TAU;
+      b.vx = Math.cos(a) * cfg.ballSpeed;
+      b.vy = Math.sin(a) * cfg.ballSpeed;
+      if (cfg.gravity > 0) b.vy = -Math.abs(b.vy) * 0.5 - 60;
+      b.trail.length = 0;
+    };
+    if (this.balls.length) this.balls.forEach(reseat);
+    else this.spawnBall(0, -inner * 0.2);
   }
 
   _onHit(ball, ring, kind) {
@@ -250,12 +292,49 @@ class Game {
       ball.vx *= cfg.bounciness;
       ball.vy *= cfg.bounciness;
     }
+    // Bounce jitter: rotate the reflected velocity by a random angle up to
+    // ±bounceError degrees (0 = perfectly predictable). Only on real bounces;
+    // an escape passes straight through the gap.
+    if (kind === 'bounce' && cfg.bounceError > 0) {
+      const j = (Math.random() * 2 - 1) * cfg.bounceError * Math.PI / 180;
+      const c = Math.cos(j), s = Math.sin(j);
+      const vx = ball.vx, vy = ball.vy;
+      ball.vx = vx * c - vy * s;
+      ball.vy = vx * s + vy * c;
+    }
     if (cfg.growOnBounce) {
       ball.radius += cfg.growAmount;
       this.maxSize = Math.max(this.maxSize, ball.radius);
     }
     this.shakeAmount = Math.min(this.shakeAmount + cfg.shake * (kind === 'escape' ? 1.6 : 1), cfg.shake * 2);
     if (cfg.particles) this._burst(ball.x, ball.y, ball.hue, kind === 'escape' ? 24 : 10);
+
+    // Ball mode reacts to each wall break (escape). Queue the change and apply
+    // it after the step loop so we never mutate this.balls mid-iteration.
+    if (kind === 'escape' && cfg.ballMode === 'add') {
+      this._pendingSpawn++;
+    } else if (kind === 'escape' && cfg.ballMode === 'remove') {
+      this._toRemove.add(ball);
+    }
+  }
+
+  // Apply queued ball-mode changes once per frame, after the step loop.
+  _applyBallMode() {
+    if (this._toRemove.size) {
+      const keep = this.balls.filter((b) => !this._toRemove.has(b));
+      // "Remove a ball except for 1": always leave at least one survivor.
+      this.balls = keep.length ? keep : [this.balls[this.balls.length - 1]];
+      this._toRemove.clear();
+    }
+    if (this._pendingSpawn) {
+      const inner = this.config.innerRadius;
+      for (let i = 0; i < this._pendingSpawn; i++) {
+        // Drop new balls back near the center so they re-enter the gauntlet.
+        this.spawnBall((Math.random() * 2 - 1) * inner * 0.2, -inner * 0.2);
+      }
+      this._pendingSpawn = 0;
+    }
+    this._updateReadout();
   }
 
   _containInView(ball) {
@@ -287,6 +366,8 @@ class Game {
 
   _updateReadout() {
     const ro = document.getElementById('readout');
+    if (!this.config.showText) { ro.style.display = 'none'; return; }
+    ro.style.display = '';
     const alive = this.rings.filter((r) => r.alive).length;
     let txt = `Walls: ${alive}/${this.rings.length}`;
     if (this.config.growOnBounce) txt += `   Size: ${this.maxSize.toFixed(2)}`;
@@ -328,7 +409,7 @@ class Game {
 
     ctx.restore();
 
-    if (this.won) this._renderWin(ctx, baseHue);
+    if (this.won && cfg.showText) this._renderWin(ctx, baseHue);
   }
 
   _renderRings(ctx, cfg, baseHue) {
