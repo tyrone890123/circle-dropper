@@ -38,12 +38,23 @@ export const CONFIG_SCHEMA = [
       { key: 'alternateSpin', label: 'Alt. spin direction', type: 'checkbox', default: true },
       { key: 'gravity',       label: 'Gravity',     type: 'range', min: 0,   max: 2200, step: 10,  default: 900 },
       { key: 'bounciness',    label: 'Bounciness',  type: 'range', min: 0.5, max: 1.3, step: 0.01, default: 1.0 },
+      { key: 'bounceError',   label: 'Bounce jitter (±°)', type: 'range', min: 0, max: 10, step: 0.1, default: 0 },
+      { key: 'loopMode',      label: 'Endless loop (rebuild walls)', type: 'checkbox', default: false },
     ],
   },
   {
     group: 'Balls',
     controls: [
       { key: 'ballCount',     label: 'Ball count',  type: 'range', min: 1,   max: 30,  step: 1,   default: 1 },
+      {
+        key: 'ballMode', label: 'On break', type: 'select',
+        options: [
+          { value: 'none',   label: 'None' },
+          { value: 'add',    label: 'Add a ball' },
+          { value: 'remove', label: 'Remove a ball (keep 1)' },
+        ],
+        default: 'none',
+      },
       { key: 'ballSpeed',     label: 'Launch speed',type: 'range', min: 0,   max: 900, step: 10,  default: 320 },
       { key: 'ballRadius',    label: 'Ball size',   type: 'range', min: 4,   max: 30,  step: 1,   default: 10 },
       { key: 'growOnBounce',  label: 'Grow on bounce', type: 'checkbox', default: false },
@@ -57,8 +68,9 @@ export const CONFIG_SCHEMA = [
       { key: 'hueCycle',     label: 'Hue drift',    type: 'range', min: 0,   max: 60,  step: 1,   default: 12 },
       { key: 'glow',         label: 'Glow',         type: 'range', min: 0,   max: 40,  step: 1,   default: 22 },
       { key: 'trail',        label: 'Trail',        type: 'range', min: 0,   max: 0.4, step: 0.01, default: 0.16 },
-      { key: 'shake',        label: 'Screen shake', type: 'range', min: 0,   max: 30,  step: 1,   default: 12 },
+      { key: 'shake',        label: 'Screen shake', type: 'range', min: 0,   max: 30,  step: 1,   default: 0 },
       { key: 'particles',    label: 'Particle burst', type: 'checkbox', default: true },
+      { key: 'showText',     label: 'Show on-screen text', type: 'checkbox', default: true },
     ],
   },
   {
