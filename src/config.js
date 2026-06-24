@@ -16,8 +16,16 @@ export const CONFIG_SCHEMA = [
         ],
         default: 'circle',
       },
-      { key: 'ringCount',   label: 'Wall count',   type: 'range', min: 1,  max: 12,  step: 1,   default: 5 },
-      { key: 'ringSpacing', label: 'Wall spacing', type: 'range', min: 26, max: 90,  step: 1,   default: 46 },
+      {
+        key: 'viewMode', label: 'View', type: 'select',
+        options: [
+          { value: 'fit',  label: 'Fit (one screen)' },
+          { value: 'zoom', label: 'Zoom out on break' },
+        ],
+        default: 'fit',
+      },
+      { key: 'ringCount',   label: 'Wall count',   type: 'range', min: 1,  max: 60,  step: 1,   default: 5 },
+      { key: 'ringSpacing', label: 'Wall spacing', type: 'range', min: 12, max: 90,  step: 1,   default: 46 },
       { key: 'innerRadius', label: 'Inner size',   type: 'range', min: 30, max: 160, step: 1,   default: 70 },
       { key: 'thickness',   label: 'Wall width',   type: 'range', min: 2,  max: 22,  step: 1,   default: 8 },
       { key: 'gapWidth',    label: 'Gap size (°)', type: 'range', min: 10, max: 150, step: 1,   default: 60 },
