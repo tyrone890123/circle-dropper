@@ -210,47 +210,40 @@ class Game {
     requestAnimationFrame((nt) => this._frame(nt));
   }
 
-  // Detect a ball about to thread a gap and ease the drama level toward it.
+  // Near-miss drama is triggered as a discrete event by _onHit (a bounce right
+  // at a gap edge — i.e. the ball almost escaped but didn't). Here it only
+  // decays. Escapes never trigger it, so the slow-mo fires on misses, not goes-in.
   _updateDrama(rawDt) {
-    const cfg = this.config;
-    let target = 0, best = null;
-    const ring = innermostAlive(this.rings);
-    if (cfg.nearMiss && ring) {
-      const band = ring.thickness + cfg.ballRadius + 80;   // only when near the wall
-      for (const b of this.balls) {
-        const distW = Math.hypot(b.x, b.y);
-        if (distW < 1e-3) continue;
-        const radialV = (b.vx * b.x + b.vy * b.y) / distW; // outward speed
-        if (radialV <= 0) continue;                        // must be approaching
-        const local = normalizeAngle(Math.atan2(b.y, b.x) - ring.rotation);
-        const wall = ring.radiusAtAngle(local);
-        const distToWall = wall - distW;
-        if (distToWall < -ring.thickness || distToWall > band) continue;
-        const angDist = Math.abs(normalizeAngle(local - ring.gapCenter));
-        const rf = Math.max(0, 1 - Math.max(0, distToWall) / band);
-        const af = Math.max(0, 1 - angDist / Math.max(0.05, ring.gapWidth)); // near gap center
-        const e = rf * af;
-        if (e > target) { target = e; best = b; }
-      }
-    }
-    if (best) this.dramaBall = best;
-    // Ease toward the target excitement; release a touch faster than it builds.
-    const k = target > this.drama ? 6 : 3.5;
-    this.drama += (target - this.drama) * Math.min(1, rawDt * k);
+    if (!this.config.nearMiss) { this.drama = 0; this.dramaBall = null; this.timeScale = 1; return; }
+    this.drama = Math.max(0, this.drama - rawDt * 1.7);   // ~0.6s recovery
     if (this.drama < 0.01) { this.drama = 0; this.dramaBall = null; }
-    this.timeScale = 1 - this.drama * 0.82;     // down to ~0.18x at full drama
+    this.timeScale = 1 - this.drama * 0.9;                 // down to 0.1x — hard slow-mo
+  }
+
+  // Called from _onHit on every bounce: if the ball bounced close to the gap
+  // edge, snap the drama up hard (aggressive, not gradual).
+  _triggerNearMiss(ball, ring) {
+    const local = normalizeAngle(Math.atan2(ball.y, ball.x) - ring.rotation);
+    const edge = Math.abs(normalizeAngle(local - ring.gapCenter)) - ring.gapWidth / 2;
+    const margin = Math.max(0.12, ring.gapWidth * 0.45);   // how near the edge counts
+    if (edge >= margin) return;                            // a plain wall hit, no drama
+    // sqrt curve biases even moderate misses toward a strong, punchy effect.
+    const strength = Math.sqrt(Math.max(0, 1 - Math.max(0, edge) / margin));
+    if (strength > this.drama) { this.drama = strength; this.dramaBall = ball; } // snap up
   }
 
   // Ease zoom + pan every real frame so slow-mo doesn't stall the camera.
+  // Snaps in fast on a near miss, eases back out as the drama decays.
   _updateCamera(rawDt) {
     const base = this._camTarget();
-    const zoomTarget = base * (1 + this.drama * 0.9);
-    this.cam += (zoomTarget - this.cam) * Math.min(1, rawDt * 4);
+    const zoomTarget = base * (1 + this.drama * 1.7);      // strong punch-in
+    const zk = zoomTarget > this.cam ? 18 : 6;             // fast in, slower out
+    this.cam += (zoomTarget - this.cam) * Math.min(1, rawDt * zk);
     // Pan toward the framed ball as drama rises, back to the arena center as it falls.
     const tx = this.dramaBall ? this.dramaBall.x * this.drama : 0;
     const ty = this.dramaBall ? this.dramaBall.y * this.drama : 0;
-    this.camX += (tx - this.camX) * Math.min(1, rawDt * 5);
-    this.camY += (ty - this.camY) * Math.min(1, rawDt * 5);
+    this.camX += (tx - this.camX) * Math.min(1, rawDt * 18);
+    this.camY += (ty - this.camY) * Math.min(1, rawDt * 18);
   }
 
   _update(dt) {
@@ -370,6 +363,9 @@ class Game {
     }
     this.shakeAmount = Math.min(this.shakeAmount + cfg.shake * (kind === 'escape' ? 1.6 : 1), cfg.shake * 2);
     if (cfg.particles) this._burst(ball.x, ball.y, ball.hue, kind === 'escape' ? 24 : 10);
+
+    // Near-miss drama: only on a bounce (the ball did NOT go in) near a gap edge.
+    if (kind === 'bounce' && cfg.nearMiss) this._triggerNearMiss(ball, ring);
 
     if (kind === 'escape') {
       // Per-break speed ramp: jump this ball's velocity on each escape.
