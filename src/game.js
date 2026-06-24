@@ -24,17 +24,24 @@ class Game {
     this.hueShift = 0;
     this.last = 0;
 
-    this.cx = 0; this.cy = 0;    // arena center in canvas px
-    this.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    this.cx = 0; this.cy = 0;    // viewport center (screen px); world center is (0,0)
+    this.cam = 1;                // camera zoom (world units -> screen px)
+    // Cap render resolution: a 120Hz phone at dpr 3 has ~9ms just to fill the
+    // canvas, which alone blows the frame budget. 1.5 stays crisp and fast.
+    this.dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+
+    // Keys that change the arena's geometry — these need the rings rebuilt.
+    const GEOMETRY = ['shape', 'viewMode', 'ringCount', 'ringSpacing',
+                      'innerRadius', 'thickness', 'gapWidth'];
 
     this.panel = new Panel(document.getElementById('controls'), (cfg, key) => {
       this.audio.applyConfig(cfg);
-      // Live-tune spins/gaps without a full reset where it's cheap.
-      if (key && ['rotationSpeed', 'alternateSpin', 'shake', 'glow', 'trail',
-                  'hue', 'hueCycle', 'particles', 'gravity', 'bounciness',
-                  'growOnBounce', 'growAmount'].includes(key)) {
-        this.applyMotion();
-      }
+      if (key === 'rotationSpeed' || key === 'alternateSpin') this.applyMotion();
+      // While paused, rebuild the preview live so geometry/view edits are
+      // visible immediately. While running, geometry waits for Reset (per SPEC),
+      // but viewMode still applies live because the camera re-targets each frame.
+      if (!this.running && key && GEOMETRY.includes(key)) this.reset(false);
+      else if (!this.running) this.cam = this._camTarget();
     });
 
     this._initDom();
@@ -84,12 +91,12 @@ class Game {
       document.getElementById('panel').classList.toggle('collapsed');
     });
 
-    // Click/tap the stage to drop an extra ball where you tap.
+    // Click/tap the stage to drop an extra ball where you tap (screen -> world).
     this.canvas.addEventListener('pointerdown', (e) => {
       if (!this.running) return;
       const rect = this.canvas.getBoundingClientRect();
-      const x = (e.clientX - rect.left);
-      const y = (e.clientY - rect.top);
+      const x = (e.clientX - rect.left - this.cx) / this.cam;
+      const y = (e.clientY - rect.top - this.cy) / this.cam;
       this.spawnBall(x, y);
     });
   }
@@ -98,13 +105,35 @@ class Game {
     const wrap = document.getElementById('stageWrap');
     const w = wrap.clientWidth;
     const h = wrap.clientHeight;
-    this.canvas.width = w * this.dpr;
-    this.canvas.height = h * this.dpr;
+    this.canvas.width = Math.round(w * this.dpr);
+    this.canvas.height = Math.round(h * this.dpr);
     this.canvas.style.width = w + 'px';
     this.canvas.style.height = h + 'px';
     this.viewW = w; this.viewH = h;
-    this.cx = w / 2;
+    this.cx = w / 2;            // viewport center (screen px); arena center is world (0,0)
     this.cy = h / 2;
+    // Snap the camera to the new viewport so nothing clips after a resize/rotate.
+    if (this.rings && this.rings.length) this.cam = this._camTarget();
+  }
+
+  // Full arena radius in world units (unscaled, the simulation's own space).
+  _outerSize() {
+    const c = this.config;
+    return c.innerRadius + (c.ringCount - 1) * c.ringSpacing + c.thickness / 2;
+  }
+
+  // Camera zoom = (screen half-extent) / (world radius we want to fill).
+  //  • 'fit'  — always frame the whole arena: one fixed screen size, never clips.
+  //  • 'zoom' — frame only the current innermost wall, so each break (which makes
+  //             a bigger wall the innermost) zooms the camera out.
+  _camTarget() {
+    const avail = Math.min(this.viewW, this.viewH) / 2 - 16;
+    let focus = this._outerSize();
+    if (this.config.viewMode === 'zoom') {
+      const inner = innermostAlive(this.rings);
+      if (inner) focus = (inner.size + this.config.thickness) * 1.18;
+    }
+    return Math.max(0.02, avail / focus);
   }
 
   applyMotion() {
@@ -132,13 +161,15 @@ class Game {
     this.won = false;
     this.maxSize = this.config.ballRadius;
     this.audio.reset();
+    this.cam = this._camTarget();      // snap camera on a fresh layout
     for (let i = 0; i < this.config.ballCount; i++) {
-      this.spawnBall(this.cx, this.cy - this.config.innerRadius * 0.3);
+      this.spawnBall(0, -this.config.innerRadius * 0.3);   // world coords (center = 0,0)
     }
     this.running = autostart ? true : this.running;
     this._updateReadout();
   }
 
+  // x,y are world coords relative to the arena center.
   spawnBall(x, y) {
     const cfg = this.config;
     const ang = Math.random() * TAU;
@@ -165,7 +196,8 @@ class Game {
 
     for (const r of this.rings) r.update(dt);
 
-    // Substep integration for stable collisions at speed.
+    // Substep integration for stable collisions at speed. Arena center = (0,0)
+    // in world coords; the camera handles mapping to the screen.
     const sub = 3;
     const sdt = dt / sub;
     for (let s = 0; s < sub; s++) {
@@ -173,7 +205,7 @@ class Game {
         ball.integrate(sdt, cfg.gravity);
         const ring = innermostAlive(this.rings);
         if (ring) {
-          const res = collide(ring, ball, this.cx, this.cy);
+          const res = collide(ring, ball, 0, 0);
           if (res === 'bounce' || res === 'escape') {
             this._onHit(ball, ring, res);
           }
@@ -183,6 +215,10 @@ class Game {
         }
       }
     }
+
+    // Ease the camera toward its target so 'zoom' mode glides out on each break.
+    const target = this._camTarget();
+    this.cam += (target - this.cam) * Math.min(1, dt * 4);
 
     for (const ball of this.balls) ball.recordTrail();
 
@@ -224,10 +260,12 @@ class Game {
 
   _containInView(ball) {
     const r = ball.radius;
-    if (ball.x < r) { ball.x = r; ball.vx = Math.abs(ball.vx); }
-    if (ball.x > this.viewW - r) { ball.x = this.viewW - r; ball.vx = -Math.abs(ball.vx); }
-    if (ball.y < r) { ball.y = r; ball.vy = Math.abs(ball.vy); }
-    if (ball.y > this.viewH - r) { ball.y = this.viewH - r; ball.vy = -Math.abs(ball.vy) * 0.9; }
+    const hx = this.viewW / 2 / this.cam - r;   // world-space view bounds
+    const hy = this.viewH / 2 / this.cam - r;
+    if (ball.x < -hx) { ball.x = -hx; ball.vx = Math.abs(ball.vx); }
+    if (ball.x > hx)  { ball.x = hx;  ball.vx = -Math.abs(ball.vx); }
+    if (ball.y < -hy) { ball.y = -hy; ball.vy = Math.abs(ball.vy); }
+    if (ball.y > hy)  { ball.y = hy;  ball.vy = -Math.abs(ball.vy) * 0.9; }
   }
 
   _burst(x, y, hue, n) {
@@ -261,8 +299,7 @@ class Game {
   _render(dt) {
     const ctx = this.ctx;
     const cfg = this.config;
-    ctx.save();
-    ctx.scale(this.dpr, this.dpr);
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
 
     // Trail: fade the previous frame instead of clearing for motion streaks.
     ctx.globalCompositeOperation = 'source-over';
@@ -275,7 +312,12 @@ class Game {
       sx = (Math.random() * 2 - 1) * this.shakeAmount;
       sy = (Math.random() * 2 - 1) * this.shakeAmount;
     }
-    ctx.translate(sx, sy);
+
+    // Camera: center the world (0,0) on the viewport and apply zoom. All world
+    // geometry is drawn around the origin from here on.
+    ctx.save();
+    ctx.translate(this.cx + sx, this.cy + sy);
+    ctx.scale(this.cam, this.cam);
 
     const baseHue = (cfg.hue + this.hueShift) % 360;
     ctx.globalCompositeOperation = 'lighter';
@@ -290,29 +332,46 @@ class Game {
   }
 
   _renderRings(ctx, cfg, baseHue) {
+    // Neon glow via two strokes (wide translucent + bright core) under
+    // `lighter` compositing — no shadowBlur, so it stays fast with many walls.
+    ctx.lineCap = 'round';
+    const glow = cfg.glow;
+    // Keep walls at least ~1px on screen even when the camera is zoomed way out
+    // (lineWidth is in world units, so it gets multiplied by cam).
+    const minW = 0.9 / this.cam;
     let idx = 0;
     for (const ring of this.rings) {
       if (!ring.alive) continue;
       const hue = (baseHue + idx * 28) % 360;
       const flash = ring.flash;
       const light = 55 + flash * 30;
-      ctx.lineWidth = ring.thickness + flash * 4;
-      ctx.lineCap = 'round';
-      ctx.strokeStyle = `hsl(${hue}, 100%, ${light}%)`;
-      ctx.shadowColor = `hsl(${hue}, 100%, 60%)`;
-      ctx.shadowBlur = cfg.glow + flash * 20;
+      const coreW = Math.max(ring.thickness + flash * 3, minW);
+      const glowW = coreW + glow * 0.85;
 
-      const segs = outlineSegments(ring, this.cx, this.cy, ring.shape === 'square' ? 200 : 140);
-      for (const seg of segs) {
-        if (seg.length < 2) continue;
-        ctx.beginPath();
-        ctx.moveTo(seg[0].x, seg[0].y);
-        for (let i = 1; i < seg.length; i++) ctx.lineTo(seg[i].x, seg[i].y);
-        ctx.stroke();
+      // Build the (gap-skipping) path once, stroke it twice. World center = 0,0.
+      let path;
+      if (ring.shape === 'circle') {
+        path = new Path2D();
+        const start = ring.gapCenter + ring.gapWidth / 2 + ring.rotation;
+        const end = ring.gapCenter - ring.gapWidth / 2 + ring.rotation + TAU;
+        path.arc(0, 0, ring.size, start, end);
+      } else {
+        path = new Path2D();
+        for (const seg of outlineSegments(ring, 0, 0, 72)) {
+          if (seg.length < 2) continue;
+          path.moveTo(seg[0].x, seg[0].y);
+          for (let i = 1; i < seg.length; i++) path.lineTo(seg[i].x, seg[i].y);
+        }
       }
+
+      ctx.lineWidth = glowW;
+      ctx.strokeStyle = `hsla(${hue}, 100%, 60%, ${0.1 + flash * 0.3})`;
+      ctx.stroke(path);
+      ctx.lineWidth = coreW;
+      ctx.strokeStyle = `hsl(${hue}, 100%, ${light}%)`;
+      ctx.stroke(path);
       idx++;
     }
-    ctx.shadowBlur = 0;
   }
 
   _renderParticles(ctx) {
@@ -337,7 +396,7 @@ class Game {
         ctx.fill();
       }
       ctx.shadowColor = `hsl(${ball.hue}, 100%, 65%)`;
-      ctx.shadowBlur = cfg.glow + 6;
+      ctx.shadowBlur = cfg.glow * 0.5 + 4;
       ctx.fillStyle = `hsl(${ball.hue}, 100%, 70%)`;
       ctx.beginPath();
       ctx.arc(ball.x, ball.y, ball.radius, 0, TAU);
@@ -353,7 +412,7 @@ class Game {
 
   _renderWin(ctx, hue) {
     ctx.save();
-    ctx.scale(this.dpr, this.dpr);
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     ctx.globalCompositeOperation = 'source-over';
     ctx.font = 'bold 42px system-ui, sans-serif';
     ctx.textAlign = 'center';

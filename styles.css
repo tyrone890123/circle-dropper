@@ -71,10 +71,14 @@ html, body {
 #togglePanel {
   position: absolute;
   top: 10px; right: 10px;
-  display: none;
+  display: none;            /* shown as flex on mobile via media query */
+  align-items: center;
+  justify-content: center;
   width: 42px; height: 42px;
+  padding: 0;
   border-radius: 12px;
   font-size: 20px;
+  line-height: 1;
   background: var(--panel);
   color: var(--text);
   border: 1px solid var(--neon);
@@ -196,7 +200,7 @@ button.wide { width: 100%; margin-top: 8px; }
 @media (max-width: 760px) {
   #app { flex-direction: column; }
   #stageWrap { flex: 1 1 auto; height: 100vh; }
-  #togglePanel { display: block; }
+  #togglePanel { display: flex; }
   #panel {
     position: absolute;
     top: 0; right: 0;

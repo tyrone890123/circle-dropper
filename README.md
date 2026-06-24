@@ -29,8 +29,12 @@ relative; `.nojekyll` keeps the `src/` modules served as-is.
 
 Everything is a live slider/toggle in the right-hand panel:
 
-- **Arena** — shape (circle/square), wall count, spacing, inner size, wall
-  width, gap size.
+- **Arena** — shape (circle/square), **view** mode, wall count (up to 60),
+  spacing, inner size, wall width, gap size.
+  - **View → Fit (one screen):** the whole arena is always framed to a single
+    screen size, so nothing clips no matter how many walls.
+  - **View → Zoom out on break:** the camera frames just the current innermost
+    wall and zooms out each time one is eliminated.
 - **Motion** — spin speed, alternate spin direction, gravity, bounciness.
 - **Balls** — count, launch speed, size, grow-on-bounce (+ amount).
 - **Neon / FX** — base hue, hue drift, glow, trail, screen shake, particles.
